@@ -1,0 +1,16 @@
+# Web Server
+fastapi
+uvicorn[standard]
+
+# AWS & LangChain
+boto3
+langchain
+langchain-core
+langchain-aws
+langchain-community
+
+# Tools & Data
+pypdf
+faiss-cpu
+google-search-results
+python-dotenv
