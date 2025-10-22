@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from langchain_aws import ChatBedrock
 from langchain_aws.embeddings import BedrockEmbeddings
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain.chains import RetrievalQA

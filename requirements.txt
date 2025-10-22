@@ -1,5 +1,10 @@
+# Force Pydantic v2 for LangChain
+pydantic>=2.7.4
+
+# Force a version of FastAPI that works with Pydantic v2
+fastapi>=0.100.0
+
 # Web Server
-fastapi
 uvicorn[standard]
 
 # AWS & LangChain

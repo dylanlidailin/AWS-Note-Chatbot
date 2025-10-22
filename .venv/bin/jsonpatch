@@ -1,4 +1,4 @@
-#!/Users/dylanli/AWS-Note-Chatbot/.venv/bin/python3.11
+#!/Users/dylanli/AWS-Note-Chatbot/.venv/bin/python3.13
 # -*- coding: utf-8 -*-
 
 import sys
