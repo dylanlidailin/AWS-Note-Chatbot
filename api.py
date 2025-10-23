@@ -10,18 +10,20 @@ from pydantic import BaseModel
 import uuid
 import uvicorn
 
-# --- LangChain Imports (All necessary) ---
-from langchain_aws import ChatBedrock
-from langchain_aws.embeddings import BedrockEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import FAISS
-from langchain_community.utilities import SerpAPIWrapper
+# --- LangChain Imports ---
+from langchain_classic.agents import AgentExecutor
+from langgraph.prebuilt import create_react_agent
+from langchain_core.prompts import PromptTemplate
+from langchain_classic.memory import ConversationBufferMemory
+from langchain_classic.chains.retrieval import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.tools import Tool
-from langchain.chains.retrieval_qa import RetrievalQA  # <-- Re-added
-from langchain.prompts import PromptTemplate           # <-- Re-added
-from langchain.agents import AgentType, initialize_agent # <-- Re-added
-from langchain.memory import ConversationBufferMemory    # <-- Re-added
+from langchain_community.utilities import SerpAPIWrapper
+from langchain_community.vectorstores import FAISS
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_aws.embeddings import BedrockEmbeddings
+from langchain_aws import ChatBedrock
 # --- End of LangChain Imports ---
 
 SESSION_STORE = {}
@@ -59,8 +61,8 @@ async def serve_ui():
     return HTMLResponse(html_file.read_text())
 
 # === PDF QA Tool ===
-def build_chain_from_pdf(path: str) -> RetrievalQA:
-    """Build a RetrievalQA chain to be used as a tool."""
+def build_chain_from_pdf(path: str):
+    """Build a retrieval chain to be used as a tool."""
     loader = PyPDFLoader(path)
     docs = loader.load_and_split()
 
@@ -74,12 +76,15 @@ def build_chain_from_pdf(path: str) -> RetrievalQA:
     index = FAISS.from_documents(pages, embeddings)
     retriever = index.as_retriever()
 
-    # We use a simple chain_type, as the agent will handle the prompting
-    return RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=retriever,
+    # Modern chain construction
+    system_prompt = (
+        "Use the given context to answer the question. "
+        "If you don't know the answer, say you don't know. "
+        "Context: {context}"
     )
+    prompt = PromptTemplate.from_template(system_prompt)
+    question_answer_chain = create_stuff_documents_chain(llm, prompt)
+    return create_retrieval_chain(retriever, question_answer_chain)
 
 @app.post("/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -90,36 +95,55 @@ async def upload_pdf(file: UploadFile = File(...)):
             tmp.flush()
             path = tmp.name
 
-        # 1. Build the QA chain for the PDF
-        qa_chain = build_chain_from_pdf(path)
-        if qa_chain is None:
-            raise HTTPException(status_code=400, detail="Unable to build QA chain")
+        retrieval_chain = build_chain_from_pdf(path)
+        if retrieval_chain is None:
+            raise HTTPException(status_code=400, detail="Unable to build retrieval chain")
 
-        # 2. Create a specific tool for this PDF
+        def retrieval_chain_func(query: str) -> str:
+            """A wrapper function to invoke the chain with a query."""
+            return retrieval_chain.invoke({"input": query})
+
         pdf_tool = Tool(
             name="PDF Search",
-            func=qa_chain.run, # Use the chain's run method
+            func=retrieval_chain_func,
             description=f"Useful for answering questions about the specific content of the uploaded PDF: {file.filename}"
         )
         
-        # 3. Define the list of tools the agent can use
         tools = [search_tool, pdf_tool]
         
-        # 4. Create a new memory for this session
-        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-        
-        # 5. Initialize the agent
-        agent = initialize_agent(
-            tools,
-            llm,
-            agent=AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION,
-            verbose=True, # Set to True to see the agent's thoughts in your terminal
-            memory=memory
+        # Modern agent construction
+        prompt = PromptTemplate.from_template(
+            """
+            You are a helpful assistant. Answer the user's questions to the best of your ability.
+            TOOLS:
+            ------
+            You have access to the following tools:
+            {tools}
+            To use a tool, please use the following format:
+            ```
+            Thought: Do I need to use a tool? Yes
+            Action: The action to take. Should be one of [{tool_names}]
+            Action Input: The input to the action
+            Observation: The result of the action
+            ```
+            When you have a response to say to the Human, or if you do not need to use a tool, you MUST use the format:
+            ```
+            Thought: Do I need to use a tool? No
+            Final Answer: [your response here]
+            ```
+            Begin!
+            Previous conversation history:
+            {chat_history}
+            New input: {input}
+            {agent_scratchpad}
+            """
         )
 
-        # 6. Store the agent, not the retriever
+        agent = create_react_agent(llm, tools, prompt)
+        agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, handle_parsing_errors=True)
+
         session_id = str(uuid.uuid4())
-        SESSION_STORE[session_id] = agent
+        SESSION_STORE[session_id] = agent_executor
 
         return {
             "status": "Uploaded",
@@ -138,17 +162,17 @@ class Query(BaseModel):
 
 @app.post("/ask")
 async def ask(q: Query):
-    # 1. Get the agent from the session store
-    agent = SESSION_STORE.get(q.session_id)
+    agent_executor = SESSION_STORE.get(q.session_id)
 
-    if agent is None:
+    if agent_executor is None:
         return {"answer": "Session not found or expired."}
 
     try:
-        # 2. Run the agent with the question
-        # The agent will decide to use the 'SerpAPI Search' or 'PDF Search' tool
-        response = agent.run(q.question)
-        answer = response
+        response = agent_executor.invoke({
+            "input": q.question,
+            "chat_history": []
+        })
+        answer = response.get("output", "No answer found.")
         
     except Exception as e:
         answer = f"Error: {str(e)}"

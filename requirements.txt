@@ -19,3 +19,4 @@ pypdf
 faiss-cpu
 google-search-results
 python-dotenv
+langgraph
